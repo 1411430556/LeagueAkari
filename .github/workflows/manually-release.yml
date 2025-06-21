@@ -1,0 +1,67 @@
+name: Manual Windows Build & Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Git tag to release (e.g. v1.2.3 or v1.2.3-rabi.1)'
+        required: true
+        type: string
+
+permissions:
+  contents: write # allow creating / updating Release
+  id-token: write # some npm private libraries or subsequent steps may need
+
+jobs:
+  build-release:
+    runs-on: windows-latest # Windows Server 2022 runner
+    env:
+      NODE_AUTH_TOKEN: ${{ secrets.NPM_AUTH_TOKEN }}
+    timeout-minutes: 30
+
+    steps:
+      # 1. 检出指定 tag
+      - name: Checkout ${{ github.event.inputs.tag }}
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag }}
+          fetch-depth: 0 # fetch full history, avoid missing files when tag points to old commits
+
+      # 2. 安装 Node.js 22，并缓存 Yarn
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'yarn'
+
+      # 3. enable Corepack, ensure Yarn is available
+      - name: Enable Corepack / Yarn
+        run: |
+          corepack enable
+          yarn --version
+
+      # 4. install dependencies
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile
+
+      # 5. build Windows package
+      - name: Build Windows package
+        run: yarn build:win
+
+      # 6. locate the generated 7z file
+      - name: Locate 7z artifact
+        id: locate
+        shell: powershell
+        run: |
+          $file = Get-ChildItem -Path . -Filter *.7z -Recurse | Select-Object -First 1
+          if (-not $file) { Write-Error "*.7z not found"; exit 1 }
+          "file=$($file.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      # 7. create GitHub Release and upload 7z
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag }}
+          name: ${{ github.event.inputs.tag }}
+          files: ${{ steps.locate.outputs.file }}
+          prerelease: ${{ contains(github.event.inputs.tag, '-rabi.') }}
